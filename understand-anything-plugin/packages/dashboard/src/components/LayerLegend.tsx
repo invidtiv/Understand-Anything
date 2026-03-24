@@ -1,6 +1,6 @@
 import { useDashboardStore } from "../store";
 
-// Shared layer color palette — used by both LayerLegend dots and GraphView group nodes
+// Shared layer color palette — used by LayerLegend, LayerClusterNode, PortalNode, and GraphView
 export const LAYER_PALETTE = [
   { bg: "rgba(74, 124, 155, 0.12)", border: "rgba(74, 124, 155, 0.4)", label: "#4a7c9b" },   // blue (API)
   { bg: "rgba(90, 158, 111, 0.12)", border: "rgba(90, 158, 111, 0.4)", label: "#5a9e6f" },   // green (Data)
@@ -17,56 +17,54 @@ export function getLayerColor(index: number) {
 
 export default function LayerLegend() {
   const graph = useDashboardStore((s) => s.graph);
-  const showLayers = useDashboardStore((s) => s.showLayers);
-  const toggleLayers = useDashboardStore((s) => s.toggleLayers);
+  const navigationLevel = useDashboardStore((s) => s.navigationLevel);
+  const activeLayerId = useDashboardStore((s) => s.activeLayerId);
 
   const layers = graph?.layers ?? [];
   const hasLayers = layers.length > 0;
 
+  if (!hasLayers) return null;
+
+  const activeLayer = layers.find((l) => l.id === activeLayerId);
+
   return (
     <div className="flex items-center gap-2">
-      <button
-        onClick={toggleLayers}
-        disabled={!hasLayers}
-        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-          showLayers && hasLayers
-            ? "bg-gold/20 text-gold"
-            : hasLayers
-              ? "bg-elevated text-text-secondary hover:bg-surface"
-              : "bg-elevated text-text-muted cursor-not-allowed"
-        }`}
-        title={
-          hasLayers
-            ? showLayers
-              ? "Hide layer grouping"
-              : "Show layer grouping"
-            : "No layers in graph"
-        }
-      >
-        Layers {showLayers && hasLayers ? "ON" : "OFF"}
-      </button>
+      <span className="text-[11px] font-medium text-text-secondary">
+        {navigationLevel === "overview"
+          ? `${layers.length} layers`
+          : activeLayer?.name ?? "Layer"}
+      </span>
 
-      {showLayers && hasLayers && (
-        <div className="flex items-center gap-3">
-          {layers.map((layer, i) => {
-            const color = getLayerColor(i);
-            return (
-              <div key={layer.id} className="flex items-center gap-1">
-                <span
-                  className="inline-block w-2 h-2 rounded-full"
-                  style={{ backgroundColor: color.label }}
-                />
-                <span className="text-text-secondary text-[11px]">
-                  {layer.name}
-                  <span className="text-text-muted ml-0.5">
-                    ({layer.nodeIds.length})
-                  </span>
+      <div className="flex items-center gap-3">
+        {layers.map((layer, i) => {
+          const color = getLayerColor(i);
+          const isActive = navigationLevel === "layer-detail" && layer.id === activeLayerId;
+          return (
+            <div key={layer.id} className="flex items-center gap-1">
+              <span
+                className="inline-block w-2 h-2 rounded-full"
+                style={{
+                  backgroundColor: color.label,
+                  opacity: navigationLevel === "layer-detail" && !isActive ? 0.3 : 1,
+                }}
+              />
+              <span
+                className={`text-[11px] ${
+                  isActive ? "text-text-primary font-medium" : "text-text-secondary"
+                }`}
+                style={{
+                  opacity: navigationLevel === "layer-detail" && !isActive ? 0.4 : 1,
+                }}
+              >
+                {layer.name}
+                <span className="text-text-muted ml-0.5">
+                  ({layer.nodeIds.length})
                 </span>
-              </div>
-            );
-          })}
-        </div>
-      )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

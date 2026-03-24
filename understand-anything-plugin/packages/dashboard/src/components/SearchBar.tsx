@@ -14,7 +14,7 @@ export default function SearchBar() {
   const searchResults = useDashboardStore((s) => s.searchResults);
   const graph = useDashboardStore((s) => s.graph);
   const setSearchQuery = useDashboardStore((s) => s.setSearchQuery);
-  const selectNode = useDashboardStore((s) => s.selectNode);
+  const navigateToNodeInLayer = useDashboardStore((s) => s.navigateToNodeInLayer);
   const searchMode = useDashboardStore((s) => s.searchMode);
   const setSearchMode = useDashboardStore((s) => s.setSearchMode);
 
@@ -40,10 +40,10 @@ export default function SearchBar() {
 
   const handleResultClick = useCallback(
     (nodeId: string) => {
-      selectNode(nodeId);
+      navigateToNodeInLayer(nodeId);
       setDropdownOpen(false);
     },
-    [selectNode],
+    [navigateToNodeInLayer],
   );
 
   // Close dropdown on Escape
@@ -72,7 +72,7 @@ export default function SearchBar() {
   const showDropdown = dropdownOpen && searchQuery.trim() && topResults.length > 0;
 
   return (
-    <div ref={containerRef} className="relative z-10">
+    <div ref={containerRef} className="relative z-30">
       <div className="flex items-center gap-2 px-4 py-2 bg-surface border-b border-border-subtle">
         <svg
           className="w-4 h-4 text-text-muted shrink-0"

@@ -7,6 +7,16 @@ import type {
 } from "@understand-anything/core/types";
 
 export type Persona = "non-technical" | "junior" | "experienced";
+export type NavigationLevel = "overview" | "layer-detail";
+export type ViewMode = "graph" | "flow";
+
+/** Find which layer a node belongs to. Returns layerId or null. */
+function findNodeLayer(graph: KnowledgeGraph, nodeId: string): string | null {
+  for (const layer of graph.layers) {
+    if (layer.nodeIds.includes(nodeId)) return layer.id;
+  }
+  return null;
+}
 
 interface DashboardStore {
   graph: KnowledgeGraph | null;
@@ -18,6 +28,13 @@ interface DashboardStore {
   setSearchMode: (mode: "fuzzy" | "semantic") => void;
 
   showLayers: boolean;
+
+  // Lens navigation
+  navigationLevel: NavigationLevel;
+  activeLayerId: string | null;
+
+  // View mode: graph (default free-form) or flow (swim-lane)
+  viewMode: ViewMode;
 
   codeViewerOpen: boolean;
   codeViewerNodeId: string | null;
@@ -38,9 +55,17 @@ interface DashboardStore {
   // Focus mode: isolate a node's 1-hop neighborhood
   focusNodeId: string | null;
 
+  // Sidebar navigation history (stack of visited node IDs)
+  nodeHistory: string[];
+
   setGraph: (graph: KnowledgeGraph) => void;
   selectNode: (nodeId: string | null) => void;
   navigateToNode: (nodeId: string) => void;
+  navigateToNodeInLayer: (nodeId: string) => void;
+  goBackNode: () => void;
+  drillIntoLayer: (layerId: string) => void;
+  navigateToOverview: () => void;
+  setViewMode: (mode: ViewMode) => void;
   setFocusNode: (nodeId: string | null) => void;
   setSearchQuery: (query: string) => void;
   toggleLayers: () => void;
@@ -64,6 +89,22 @@ function getSortedTour(graph: KnowledgeGraph): TourStep[] {
   return [...tour].sort((a, b) => a.order - b.order);
 }
 
+/** Navigate tour step to the correct layer for the first highlighted node. */
+function navigateTourToLayer(
+  graph: KnowledgeGraph,
+  nodeIds: string[],
+): Partial<DashboardStore> {
+  if (nodeIds.length === 0) return {};
+  const layerId = findNodeLayer(graph, nodeIds[0]);
+  if (layerId) {
+    return {
+      navigationLevel: "layer-detail" as const,
+      activeLayerId: layerId,
+    };
+  }
+  return {};
+}
+
 export const useDashboardStore = create<DashboardStore>()((set, get) => ({
   graph: null,
   selectedNodeId: null,
@@ -73,6 +114,10 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
   searchMode: "fuzzy",
 
   showLayers: false,
+
+  navigationLevel: "overview",
+  activeLayerId: null,
+  viewMode: "graph",
 
   codeViewerOpen: false,
   codeViewerNodeId: null,
@@ -89,15 +134,125 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
 
   zoomToNodeId: null,
   focusNodeId: null,
+  nodeHistory: [],
 
   setGraph: (graph) => {
     const searchEngine = new SearchEngine(graph.nodes);
     const query = get().searchQuery;
     const searchResults = query.trim() ? searchEngine.search(query) : [];
-    set({ graph, searchEngine, searchResults });
+    set({
+      graph,
+      searchEngine,
+      searchResults,
+      navigationLevel: "overview",
+      activeLayerId: null,
+      selectedNodeId: null,
+      focusNodeId: null,
+      nodeHistory: [],
+    });
   },
-  selectNode: (nodeId) => set({ selectedNodeId: nodeId }),
-  navigateToNode: (nodeId) => set({ selectedNodeId: nodeId, zoomToNodeId: nodeId }),
+
+  selectNode: (nodeId) => {
+    const { selectedNodeId, nodeHistory } = get();
+    if (nodeId && selectedNodeId && nodeId !== selectedNodeId) {
+      // Push current node to history before navigating away
+      set({
+        selectedNodeId: nodeId,
+        nodeHistory: [...nodeHistory, selectedNodeId],
+      });
+    } else {
+      set({ selectedNodeId: nodeId });
+    }
+  },
+
+  navigateToNode: (nodeId) => {
+    get().navigateToNodeInLayer(nodeId);
+  },
+
+  navigateToNodeInLayer: (nodeId) => {
+    const { graph, selectedNodeId, nodeHistory } = get();
+    if (!graph) return;
+    const layerId = findNodeLayer(graph, nodeId);
+    const newHistory =
+      selectedNodeId && nodeId !== selectedNodeId
+        ? [...nodeHistory, selectedNodeId]
+        : nodeHistory;
+    if (layerId) {
+      set({
+        navigationLevel: "layer-detail",
+        activeLayerId: layerId,
+        selectedNodeId: nodeId,
+        zoomToNodeId: nodeId,
+        focusNodeId: null,
+        codeViewerOpen: false,
+        codeViewerNodeId: null,
+        nodeHistory: newHistory,
+      });
+    } else {
+      set({
+        selectedNodeId: nodeId,
+        zoomToNodeId: nodeId,
+        nodeHistory: newHistory,
+      });
+    }
+  },
+
+  goBackNode: () => {
+    const { nodeHistory } = get();
+    if (nodeHistory.length === 0) return;
+    const prevNodeId = nodeHistory[nodeHistory.length - 1];
+    const newHistory = nodeHistory.slice(0, -1);
+    // Navigate to previous node WITHOUT pushing to history
+    const { graph } = get();
+    if (!graph) return;
+    const layerId = findNodeLayer(graph, prevNodeId);
+    if (layerId) {
+      set({
+        navigationLevel: "layer-detail",
+        activeLayerId: layerId,
+        selectedNodeId: prevNodeId,
+        zoomToNodeId: prevNodeId,
+        nodeHistory: newHistory,
+      });
+    } else {
+      set({
+        selectedNodeId: prevNodeId,
+        zoomToNodeId: prevNodeId,
+        nodeHistory: newHistory,
+      });
+    }
+  },
+
+  drillIntoLayer: (layerId) =>
+    set({
+      navigationLevel: "layer-detail",
+      activeLayerId: layerId,
+      selectedNodeId: null,
+      focusNodeId: null,
+      codeViewerOpen: false,
+      codeViewerNodeId: null,
+    }),
+
+  navigateToOverview: () =>
+    set({
+      navigationLevel: "overview",
+      activeLayerId: null,
+      selectedNodeId: null,
+      focusNodeId: null,
+      codeViewerOpen: false,
+      codeViewerNodeId: null,
+    }),
+
+  setViewMode: (mode) =>
+    set({
+      viewMode: mode,
+      // When switching to flow view, go to overview level (flow shows all layers)
+      navigationLevel: mode === "flow" ? "overview" : get().navigationLevel,
+      activeLayerId: mode === "flow" ? null : get().activeLayerId,
+      selectedNodeId: null,
+      focusNodeId: null,
+    }),
+
   setFocusNode: (nodeId) => set({ focusNodeId: nodeId, selectedNodeId: nodeId }),
   setSearchMode: (mode) => set({ searchMode: mode }),
   setSearchQuery: (query) => {
@@ -141,11 +296,13 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
     const { graph } = get();
     if (!graph || !graph.tour || graph.tour.length === 0) return;
     const sorted = getSortedTour(graph);
+    const layerNav = navigateTourToLayer(graph, sorted[0].nodeIds);
     set({
       tourActive: true,
       currentTourStep: 0,
       tourHighlightedNodeIds: sorted[0].nodeIds,
       selectedNodeId: null,
+      ...layerNav,
     });
   },
 
@@ -161,9 +318,11 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
     if (!graph || !graph.tour || graph.tour.length === 0) return;
     const sorted = getSortedTour(graph);
     if (step < 0 || step >= sorted.length) return;
+    const layerNav = navigateTourToLayer(graph, sorted[step].nodeIds);
     set({
       currentTourStep: step,
       tourHighlightedNodeIds: sorted[step].nodeIds,
+      ...layerNav,
     });
   },
 
@@ -173,9 +332,11 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
     const sorted = getSortedTour(graph);
     if (currentTourStep < sorted.length - 1) {
       const next = currentTourStep + 1;
+      const layerNav = navigateTourToLayer(graph, sorted[next].nodeIds);
       set({
         currentTourStep: next,
         tourHighlightedNodeIds: sorted[next].nodeIds,
+        ...layerNav,
       });
     }
   },
@@ -186,9 +347,11 @@ export const useDashboardStore = create<DashboardStore>()((set, get) => ({
     if (currentTourStep > 0) {
       const sorted = getSortedTour(graph);
       const prev = currentTourStep - 1;
+      const layerNav = navigateTourToLayer(graph, sorted[prev].nodeIds);
       set({
         currentTourStep: prev,
         tourHighlightedNodeIds: sorted[prev].nodeIds,
+        ...layerNav,
       });
     }
   },

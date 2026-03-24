@@ -14,76 +14,199 @@ import "@xyflow/react/dist/style.css";
 
 import CustomNode from "./CustomNode";
 import type { CustomFlowNode } from "./CustomNode";
+import LayerClusterNode from "./LayerClusterNode";
+import type { LayerClusterFlowNode } from "./LayerClusterNode";
+import PortalNode from "./PortalNode";
+import type { PortalFlowNode } from "./PortalNode";
+import Breadcrumb from "./Breadcrumb";
 import { useDashboardStore } from "../store";
-import { applyDagreLayout, NODE_WIDTH, NODE_HEIGHT } from "../utils/layout";
-import { getLayerColor } from "./LayerLegend";
+import {
+  applyDagreLayout,
+  applySwimLaneLayout,
+  NODE_WIDTH,
+  NODE_HEIGHT,
+  LAYER_CLUSTER_WIDTH,
+  LAYER_CLUSTER_HEIGHT,
+  PORTAL_NODE_WIDTH,
+  PORTAL_NODE_HEIGHT,
+} from "../utils/layout";
+import {
+  aggregateLayerEdges,
+  computePortals,
+  findCrossLayerFileNodes,
+} from "../utils/edgeAggregation";
 
-const LAYER_PADDING = 40;
+const nodeTypes = {
+  custom: CustomNode,
+  "layer-cluster": LayerClusterNode,
+  portal: PortalNode,
+};
 
-const nodeTypes = { custom: CustomNode };
+// ── Overview level: layers as cluster nodes ────────────────────────────
 
-export default function GraphView() {
+function useOverviewGraph() {
   const graph = useDashboardStore((s) => s.graph);
+  const searchResults = useDashboardStore((s) => s.searchResults);
+  const drillIntoLayer = useDashboardStore((s) => s.drillIntoLayer);
+  const tourHighlightedNodeIds = useDashboardStore((s) => s.tourHighlightedNodeIds);
+
+  return useMemo(() => {
+    if (!graph) return { nodes: [] as Node[], edges: [] as Edge[] };
+
+    const layers = graph.layers ?? [];
+    if (layers.length === 0) return { nodes: [] as Node[], edges: [] as Edge[] };
+
+    // Build search match counts per layer
+    const searchMatchByLayer = new Map<string, number>();
+    if (searchResults.length > 0) {
+      const nodeToLayer = new Map<string, string>();
+      for (const layer of layers) {
+        for (const nid of layer.nodeIds) {
+          nodeToLayer.set(nid, layer.id);
+        }
+      }
+      for (const result of searchResults) {
+        const lid = nodeToLayer.get(result.nodeId);
+        if (lid) {
+          searchMatchByLayer.set(lid, (searchMatchByLayer.get(lid) ?? 0) + 1);
+        }
+      }
+    }
+
+    // Build tour highlight set for layers
+    const tourLayerIds = new Set<string>();
+    if (tourHighlightedNodeIds.length > 0) {
+      for (const layer of layers) {
+        if (layer.nodeIds.some((nid) => tourHighlightedNodeIds.includes(nid))) {
+          tourLayerIds.add(layer.id);
+        }
+      }
+    }
+
+    // Create cluster nodes
+    const clusterNodes: LayerClusterFlowNode[] = layers.map((layer, i) => {
+      // Compute aggregate complexity from member nodes
+      const memberNodes = graph.nodes.filter((n) => layer.nodeIds.includes(n.id));
+      const complexCounts = { simple: 0, moderate: 0, complex: 0 };
+      for (const n of memberNodes) {
+        complexCounts[n.complexity]++;
+      }
+      const aggregateComplexity =
+        complexCounts.complex > memberNodes.length * 0.3
+          ? "complex"
+          : complexCounts.moderate > memberNodes.length * 0.3
+            ? "moderate"
+            : "simple";
+
+      return {
+        id: layer.id,
+        type: "layer-cluster" as const,
+        position: { x: 0, y: 0 },
+        data: {
+          layerId: layer.id,
+          layerName: layer.name,
+          layerDescription: layer.description,
+          fileCount: layer.nodeIds.length,
+          aggregateComplexity,
+          layerColorIndex: i,
+          searchMatchCount: searchMatchByLayer.get(layer.id),
+          onDrillIn: drillIntoLayer,
+        },
+      };
+    });
+
+    // Aggregate edges between layers
+    const aggregated = aggregateLayerEdges(graph);
+    const flowEdges: Edge[] = aggregated.map((agg, i) => ({
+      id: `le-${i}`,
+      source: agg.sourceLayerId,
+      target: agg.targetLayerId,
+      label: `${agg.count}`,
+      style: {
+        stroke: "rgba(212,165,116,0.4)",
+        strokeWidth: Math.min(1 + Math.log2(agg.count + 1), 5),
+      },
+      labelStyle: { fill: "#a39787", fontSize: 11, fontWeight: 600 },
+    }));
+
+    // Layout with cluster dimensions
+    const dims = new Map<string, { width: number; height: number }>();
+    for (const n of clusterNodes) {
+      dims.set(n.id, { width: LAYER_CLUSTER_WIDTH, height: LAYER_CLUSTER_HEIGHT });
+    }
+    const laid = applyDagreLayout(clusterNodes as unknown as Node[], flowEdges, "TB", dims);
+    return { nodes: laid.nodes, edges: laid.edges };
+  }, [graph, searchResults, drillIntoLayer, tourHighlightedNodeIds]);
+}
+
+// ── Layer detail level: files + portal nodes ───────────────────────────
+
+function useLayerDetailGraph() {
+  const graph = useDashboardStore((s) => s.graph);
+  const activeLayerId = useDashboardStore((s) => s.activeLayerId);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
   const searchResults = useDashboardStore((s) => s.searchResults);
   const selectNode = useDashboardStore((s) => s.selectNode);
-  const openCodeViewer = useDashboardStore((s) => s.openCodeViewer);
-  const showLayers = useDashboardStore((s) => s.showLayers);
   const tourHighlightedNodeIds = useDashboardStore((s) => s.tourHighlightedNodeIds);
   const persona = useDashboardStore((s) => s.persona);
   const diffMode = useDashboardStore((s) => s.diffMode);
   const changedNodeIds = useDashboardStore((s) => s.changedNodeIds);
   const affectedNodeIds = useDashboardStore((s) => s.affectedNodeIds);
   const focusNodeId = useDashboardStore((s) => s.focusNodeId);
-  const setFocusNode = useDashboardStore((s) => s.setFocusNode);
+  const drillIntoLayer = useDashboardStore((s) => s.drillIntoLayer);
 
   const handleNodeSelect = useCallback(
     (nodeId: string) => {
       selectNode(nodeId);
-      openCodeViewer(nodeId);
     },
-    [selectNode, openCodeViewer],
+    [selectNode],
   );
 
-  const { initialNodes, initialEdges } = useMemo(() => {
-    if (!graph)
-      return {
-        initialNodes: [] as (CustomFlowNode | Node)[],
-        initialEdges: [] as Edge[],
-      };
+  return useMemo(() => {
+    if (!graph || !activeLayerId)
+      return { nodes: [] as Node[], edges: [] as Edge[] };
 
-    // Filter nodes and edges based on persona
-    let filteredGraphNodes =
-      persona === "non-technical"
-        ? graph.nodes.filter(
-            (n) =>
-              n.type === "concept" || n.type === "module" || n.type === "file",
-          )
-        : graph.nodes;
+    const activeLayer = graph.layers.find((l) => l.id === activeLayerId);
+    if (!activeLayer) return { nodes: [] as Node[], edges: [] as Edge[] };
+
+    const layerNodeIds = new Set(activeLayer.nodeIds);
+
+    // Filter to file nodes in this layer
+    let filteredGraphNodes = graph.nodes.filter(
+      (n) => layerNodeIds.has(n.id) && n.type === "file",
+    );
+
+    // Persona filtering
+    if (persona === "non-technical") {
+      filteredGraphNodes = filteredGraphNodes.filter(
+        (n) => n.type === "concept" || n.type === "module" || n.type === "file",
+      );
+    }
 
     let filteredNodeIds = new Set(filteredGraphNodes.map((n) => n.id));
-    let filteredGraphEdges =
-      persona === "non-technical"
-        ? graph.edges.filter(
-            (e) => filteredNodeIds.has(e.source) && filteredNodeIds.has(e.target),
-          )
-        : graph.edges;
 
-    // Focus mode: filter to 1-hop neighborhood of the focused node
+    // Intra-layer edges only
+    let filteredGraphEdges = graph.edges.filter(
+      (e) => filteredNodeIds.has(e.source) && filteredNodeIds.has(e.target),
+    );
+
+    // Focus mode: 1-hop neighborhood within the layer
     if (focusNodeId && filteredNodeIds.has(focusNodeId)) {
       const focusNeighborIds = new Set<string>([focusNodeId]);
       for (const edge of filteredGraphEdges) {
         if (edge.source === focusNodeId) focusNeighborIds.add(edge.target);
         if (edge.target === focusNodeId) focusNeighborIds.add(edge.source);
       }
-      filteredGraphNodes = filteredGraphNodes.filter((n) => focusNeighborIds.has(n.id));
+      filteredGraphNodes = filteredGraphNodes.filter((n) =>
+        focusNeighborIds.has(n.id),
+      );
       filteredNodeIds = new Set(filteredGraphNodes.map((n) => n.id));
       filteredGraphEdges = filteredGraphEdges.filter(
         (e) => filteredNodeIds.has(e.source) && filteredNodeIds.has(e.target),
       );
     }
 
-    // Compute neighbor set for selection-based highlighting
+    // Neighbor set for selection highlighting
     const neighborNodeIds = new Set<string>();
     if (selectedNodeId) {
       for (const edge of filteredGraphEdges) {
@@ -93,6 +216,7 @@ export default function GraphView() {
       neighborNodeIds.add(selectedNodeId);
     }
 
+    // Build file flow nodes
     const flowNodes: CustomFlowNode[] = filteredGraphNodes.map((node) => {
       const matchResult = searchResults.find((r) => r.nodeId === node.id);
       const hasSelection = !!selectedNodeId;
@@ -111,22 +235,32 @@ export default function GraphView() {
           isTourHighlighted: tourHighlightedNodeIds.includes(node.id),
           isDiffChanged: diffMode && changedNodeIds.has(node.id),
           isDiffAffected: diffMode && affectedNodeIds.has(node.id),
-          isDiffFaded: diffMode && !changedNodeIds.has(node.id) && !affectedNodeIds.has(node.id),
-          isNeighbor: hasSelection && neighborNodeIds.has(node.id) && selectedNodeId !== node.id,
+          isDiffFaded:
+            diffMode &&
+            !changedNodeIds.has(node.id) &&
+            !affectedNodeIds.has(node.id),
+          isNeighbor:
+            hasSelection &&
+            neighborNodeIds.has(node.id) &&
+            selectedNodeId !== node.id,
           isSelectionFaded: hasSelection && !neighborNodeIds.has(node.id),
           onNodeClick: handleNodeSelect,
         },
       };
     });
 
-    const diffNodeIds = diffMode ? new Set([...changedNodeIds, ...affectedNodeIds]) : new Set<string>();
+    // Build diff-aware edges
+    const diffNodeIds = diffMode
+      ? new Set([...changedNodeIds, ...affectedNodeIds])
+      : new Set<string>();
     const flowEdges: Edge[] = filteredGraphEdges.map((edge, i) => {
       const sourceInDiff = diffMode && diffNodeIds.has(edge.source);
       const targetInDiff = diffMode && diffNodeIds.has(edge.target);
       const isImpacted = diffMode && (sourceInDiff || targetInDiff);
 
-      // Selection-based edge highlighting
-      const isSelectedEdge = !!selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId);
+      const isSelectedEdge =
+        !!selectedNodeId &&
+        (edge.source === selectedNodeId || edge.target === selectedNodeId);
       const hasSelection = !!selectedNodeId;
 
       let edgeStyle: React.CSSProperties;
@@ -135,9 +269,10 @@ export default function GraphView() {
 
       if (isImpacted) {
         edgeStyle = {
-          stroke: sourceInDiff && targetInDiff
-            ? "rgba(224, 82, 82, 0.7)"
-            : "rgba(212, 160, 48, 0.5)",
+          stroke:
+            sourceInDiff && targetInDiff
+              ? "rgba(224, 82, 82, 0.7)"
+              : "rgba(212, 160, 48, 0.5)",
           strokeWidth: 2.5,
         };
         edgeLabelStyle = { fill: "#a39787", fontSize: 10 };
@@ -171,105 +306,259 @@ export default function GraphView() {
       };
     });
 
-    // Run dagre layout on all nodes (without groups)
-    const laid = applyDagreLayout(flowNodes, flowEdges);
-    const laidNodes = laid.nodes as CustomFlowNode[];
+    // Portal nodes for connected external layers
+    const portals = computePortals(graph, activeLayerId);
+    const layerIndexMap = new Map(graph.layers.map((l, i) => [l.id, i]));
 
-    const layers = graph.layers ?? [];
-    if (!showLayers || layers.length === 0) {
-      return { initialNodes: laidNodes, initialEdges: laid.edges };
-    }
+    const portalNodes: PortalFlowNode[] = portals.map((portal) => ({
+      id: `portal:${portal.layerId}`,
+      type: "portal" as const,
+      position: { x: 0, y: 0 },
+      data: {
+        targetLayerId: portal.layerId,
+        targetLayerName: portal.layerName,
+        connectionCount: portal.connectionCount,
+        layerColorIndex: layerIndexMap.get(portal.layerId) ?? 0,
+        onNavigate: drillIntoLayer,
+      },
+    }));
 
-    // Build a map of nodeId -> layer for quick lookup
-    const nodeToLayer = new Map<string, string>();
-    for (const layer of layers) {
-      for (const nodeId of layer.nodeIds) {
-        nodeToLayer.set(nodeId, layer.id);
-      }
-    }
-
-    // Create group nodes and adjust member positions
-    const groupNodes: Node[] = [];
-    const adjustedNodes: (CustomFlowNode | Node)[] = [];
-
-    for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
-      const layer = layers[layerIdx];
-      const memberNodes = laidNodes.filter((n) =>
-        layer.nodeIds.includes(n.id),
+    // Connect portal nodes to the file nodes that have cross-layer edges
+    const portalEdges: Edge[] = [];
+    let portalEdgeIdx = flowEdges.length;
+    for (const portal of portals) {
+      const crossFiles = findCrossLayerFileNodes(
+        graph,
+        activeLayerId,
+        portal.layerId,
       );
-
-      if (memberNodes.length === 0) continue;
-
-      // Compute bounding box around member nodes
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-
-      for (const node of memberNodes) {
-        const x = node.position.x;
-        const y = node.position.y;
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x + NODE_WIDTH);
-        maxY = Math.max(maxY, y + NODE_HEIGHT);
-      }
-
-      // Group node position = top-left with padding
-      const groupX = minX - LAYER_PADDING;
-      const groupY = minY - LAYER_PADDING - 24; // extra space for label
-      const groupWidth = maxX - minX + LAYER_PADDING * 2;
-      const groupHeight = maxY - minY + LAYER_PADDING * 2 + 24;
-
-      // Create the group node with distinct color per layer
-      const layerColor = getLayerColor(layerIdx);
-      groupNodes.push({
-        id: layer.id,
-        type: "group",
-        position: { x: groupX, y: groupY },
-        data: { label: layer.name },
-        style: {
-          width: groupWidth,
-          height: groupHeight,
-          backgroundColor: layerColor.bg,
-          borderRadius: 12,
-          border: `2px solid ${layerColor.border}`,
-          padding: 8,
-          fontSize: 13,
-          fontWeight: 600,
-          color: layerColor.label,
-        },
-      });
-
-      // Adjust member node positions to be relative to the group
-      for (const node of memberNodes) {
-        adjustedNodes.push({
-          ...node,
-          parentId: layer.id,
-          extent: "parent" as const,
-          position: {
-            x: node.position.x - groupX,
-            y: node.position.y - groupY,
-          },
-        });
+      for (const fileId of crossFiles) {
+        if (filteredNodeIds.has(fileId)) {
+          portalEdges.push({
+            id: `e-${portalEdgeIdx++}`,
+            source: fileId,
+            target: `portal:${portal.layerId}`,
+            style: { stroke: "rgba(212,165,116,0.2)", strokeWidth: 1, strokeDasharray: "4 4" },
+            animated: false,
+          });
+        }
       }
     }
 
-    // Add nodes that are not in any layer (keep original positions)
-    for (const node of laidNodes) {
-      if (!nodeToLayer.has(node.id)) {
-        adjustedNodes.push(node);
-      }
-    }
-
-    // Group nodes must come before their children in the array
-    const allNodes: (CustomFlowNode | Node)[] = [
-      ...groupNodes,
-      ...adjustedNodes,
+    // Layout with mixed dimensions
+    const allFlowNodes: Node[] = [
+      ...(flowNodes as unknown as Node[]),
+      ...(portalNodes as unknown as Node[]),
     ];
+    const allFlowEdges = [...flowEdges, ...portalEdges];
 
-    return { initialNodes: allNodes, initialEdges: laid.edges };
-  }, [graph, searchResults, selectedNodeId, showLayers, tourHighlightedNodeIds, persona, handleNodeSelect, diffMode, changedNodeIds, affectedNodeIds, focusNodeId]);
+    const dims = new Map<string, { width: number; height: number }>();
+    for (const n of flowNodes) {
+      dims.set(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    }
+    for (const n of portalNodes) {
+      dims.set(n.id, { width: PORTAL_NODE_WIDTH, height: PORTAL_NODE_HEIGHT });
+    }
+
+    const laid = applyDagreLayout(allFlowNodes, allFlowEdges, "TB", dims);
+    return { nodes: laid.nodes, edges: laid.edges };
+  }, [
+    graph,
+    activeLayerId,
+    selectedNodeId,
+    searchResults,
+    tourHighlightedNodeIds,
+    persona,
+    handleNodeSelect,
+    diffMode,
+    changedNodeIds,
+    affectedNodeIds,
+    focusNodeId,
+    drillIntoLayer,
+  ]);
+}
+
+// ── Flow (swim-lane) view: all layers as columns ──────────────────────
+
+function useFlowViewGraph() {
+  const graph = useDashboardStore((s) => s.graph);
+  const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
+  const searchResults = useDashboardStore((s) => s.searchResults);
+  const selectNode = useDashboardStore((s) => s.selectNode);
+  const tourHighlightedNodeIds = useDashboardStore(
+    (s) => s.tourHighlightedNodeIds,
+  );
+  const diffMode = useDashboardStore((s) => s.diffMode);
+  const changedNodeIds = useDashboardStore((s) => s.changedNodeIds);
+  const affectedNodeIds = useDashboardStore((s) => s.affectedNodeIds);
+
+  const handleNodeSelect = useCallback(
+    (nodeId: string) => {
+      selectNode(nodeId);
+    },
+    [selectNode],
+  );
+
+  return useMemo(() => {
+    if (!graph || graph.layers.length === 0)
+      return { nodes: [] as Node[], edges: [] as Edge[] };
+
+    // Build all file nodes across all layers
+    const allLayerNodeIds = new Set(
+      graph.layers.flatMap((l) => l.nodeIds),
+    );
+
+    const fileGraphNodes = graph.nodes.filter(
+      (n) => n.type === "file" && allLayerNodeIds.has(n.id),
+    );
+
+    // Neighbor set for selection highlighting
+    const fileNodeIds = new Set(fileGraphNodes.map((n) => n.id));
+    const neighborNodeIds = new Set<string>();
+    if (selectedNodeId) {
+      for (const edge of graph.edges) {
+        if (edge.source === selectedNodeId && fileNodeIds.has(edge.target))
+          neighborNodeIds.add(edge.target);
+        if (edge.target === selectedNodeId && fileNodeIds.has(edge.source))
+          neighborNodeIds.add(edge.source);
+      }
+      neighborNodeIds.add(selectedNodeId);
+    }
+
+    const diffNodeIds = diffMode
+      ? new Set([...changedNodeIds, ...affectedNodeIds])
+      : new Set<string>();
+
+    const flowNodes: CustomFlowNode[] = fileGraphNodes.map((node) => {
+      const matchResult = searchResults.find((r) => r.nodeId === node.id);
+      const hasSelection = !!selectedNodeId;
+      return {
+        id: node.id,
+        type: "custom" as const,
+        position: { x: 0, y: 0 },
+        data: {
+          label: node.name ?? node.filePath?.split("/").pop() ?? node.id,
+          nodeType: node.type,
+          summary: node.summary,
+          complexity: node.complexity,
+          isHighlighted: !!matchResult,
+          searchScore: matchResult?.score,
+          isSelected: selectedNodeId === node.id,
+          isTourHighlighted: tourHighlightedNodeIds.includes(node.id),
+          isDiffChanged: diffMode && changedNodeIds.has(node.id),
+          isDiffAffected: diffMode && affectedNodeIds.has(node.id),
+          isDiffFaded:
+            diffMode &&
+            !changedNodeIds.has(node.id) &&
+            !affectedNodeIds.has(node.id),
+          isNeighbor:
+            hasSelection &&
+            neighborNodeIds.has(node.id) &&
+            selectedNodeId !== node.id,
+          isSelectionFaded: hasSelection && !neighborNodeIds.has(node.id),
+          onNodeClick: handleNodeSelect,
+        },
+      };
+    });
+
+    // Build cross-lane edges (only between file nodes that are in layers)
+    const flowEdges: Edge[] = [];
+    let edgeIdx = 0;
+    for (const edge of graph.edges) {
+      if (!fileNodeIds.has(edge.source) || !fileNodeIds.has(edge.target))
+        continue;
+
+      const isSelectedEdge =
+        !!selectedNodeId &&
+        (edge.source === selectedNodeId || edge.target === selectedNodeId);
+      const hasSelection = !!selectedNodeId;
+      const sourceInDiff = diffMode && diffNodeIds.has(edge.source);
+      const targetInDiff = diffMode && diffNodeIds.has(edge.target);
+      const isImpacted = diffMode && (sourceInDiff || targetInDiff);
+
+      let edgeStyle: React.CSSProperties;
+      let edgeLabelStyle: React.CSSProperties;
+      let edgeAnimated: boolean;
+
+      if (isImpacted) {
+        edgeStyle = {
+          stroke:
+            sourceInDiff && targetInDiff
+              ? "rgba(224, 82, 82, 0.7)"
+              : "rgba(212, 160, 48, 0.5)",
+          strokeWidth: 2.5,
+        };
+        edgeLabelStyle = { fill: "#a39787", fontSize: 10 };
+        edgeAnimated = true;
+      } else if (diffMode) {
+        edgeStyle = { stroke: "rgba(212,165,116,0.08)", strokeWidth: 1 };
+        edgeLabelStyle = { fill: "rgba(163,151,135,0.3)", fontSize: 10 };
+        edgeAnimated = false;
+      } else if (isSelectedEdge) {
+        edgeStyle = { stroke: "rgba(212,165,116,0.8)", strokeWidth: 2.5 };
+        edgeLabelStyle = { fill: "#d4a574", fontSize: 11, fontWeight: 600 };
+        edgeAnimated = true;
+      } else if (hasSelection) {
+        edgeStyle = { stroke: "rgba(212,165,116,0.08)", strokeWidth: 1 };
+        edgeLabelStyle = { fill: "rgba(163,151,135,0.2)", fontSize: 10 };
+        edgeAnimated = false;
+      } else {
+        edgeStyle = { stroke: "rgba(212,165,116,0.25)", strokeWidth: 1 };
+        edgeLabelStyle = { fill: "#a39787", fontSize: 9 };
+        edgeAnimated = false;
+      }
+
+      flowEdges.push({
+        id: `fe-${edgeIdx++}`,
+        source: edge.source,
+        target: edge.target,
+        label: edge.type,
+        animated: edgeAnimated,
+        style: edgeStyle,
+        labelStyle: edgeLabelStyle,
+      });
+    }
+
+    const result = applySwimLaneLayout(
+      graph,
+      flowNodes as unknown as Node[],
+      flowEdges,
+    );
+    return { nodes: result.nodes, edges: result.edges };
+  }, [
+    graph,
+    selectedNodeId,
+    searchResults,
+    tourHighlightedNodeIds,
+    handleNodeSelect,
+    diffMode,
+    changedNodeIds,
+    affectedNodeIds,
+  ]);
+}
+
+// ── Main GraphView component ───────────────────────────────────────────
+
+export default function GraphView() {
+  const graph = useDashboardStore((s) => s.graph);
+  const navigationLevel = useDashboardStore((s) => s.navigationLevel);
+  const activeLayerId = useDashboardStore((s) => s.activeLayerId);
+  const viewMode = useDashboardStore((s) => s.viewMode);
+  const selectNode = useDashboardStore((s) => s.selectNode);
+  const drillIntoLayer = useDashboardStore((s) => s.drillIntoLayer);
+  const focusNodeId = useDashboardStore((s) => s.focusNodeId);
+  const setFocusNode = useDashboardStore((s) => s.setFocusNode);
+
+  const overviewGraph = useOverviewGraph();
+  const detailGraph = useLayerDetailGraph();
+  const flowGraph = useFlowViewGraph();
+
+  const { nodes: initialNodes, edges: initialEdges } =
+    viewMode === "flow"
+      ? flowGraph
+      : navigationLevel === "overview"
+        ? overviewGraph
+        : detailGraph;
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -284,28 +573,51 @@ export default function GraphView() {
     setEdges(initialEdges);
   }, [initialEdges, setEdges]);
 
+  // Fit view on level/layer/view-mode transitions
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fitView({ duration: 400, padding: 0.2 });
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [navigationLevel, activeLayerId, viewMode, fitView]);
+
   // Zoom-to-node when navigateToNode is called
   const zoomToNodeId = useDashboardStore((s) => s.zoomToNodeId);
   useEffect(() => {
     if (zoomToNodeId) {
-      // Small delay to let React Flow update node positions first
       const timer = setTimeout(() => {
-        fitView({ nodes: [{ id: zoomToNodeId }], duration: 400, padding: 0.5 });
+        fitView({
+          nodes: [{ id: zoomToNodeId }],
+          duration: 400,
+          padding: 0.5,
+        });
         useDashboardStore.setState({ zoomToNodeId: null });
-      }, 50);
+      }, 100);
       return () => clearTimeout(timer);
     }
   }, [zoomToNodeId, fitView]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: { id: string }) => {
-      // Ignore clicks on group nodes
-      const isGroupNode = graph?.layers?.some((l) => l.id === node.id);
-      if (isGroupNode) return;
-      selectNode(node.id);
-      openCodeViewer(node.id);
+      // In flow view, all clicks are selections (no drill-in)
+      // Ignore clicks on lane group nodes
+      if (viewMode === "flow") {
+        if (node.id.startsWith("lane:")) return;
+        selectNode(node.id);
+        return;
+      }
+      if (navigationLevel === "overview") {
+        // At overview, clicking a layer cluster drills in
+        drillIntoLayer(node.id);
+      } else if (node.id.startsWith("portal:")) {
+        // Portal nodes navigate to that layer
+        const targetLayerId = node.id.replace("portal:", "");
+        drillIntoLayer(targetLayerId);
+      } else {
+        selectNode(node.id);
+      }
     },
-    [selectNode, openCodeViewer, graph],
+    [viewMode, navigationLevel, drillIntoLayer, selectNode],
   );
 
   const onPaneClick = useCallback(() => {
@@ -322,8 +634,9 @@ export default function GraphView() {
 
   return (
     <div className="h-full w-full relative">
-      {focusNodeId && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
+      <Breadcrumb />
+      {focusNodeId && navigationLevel === "layer-detail" && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-10">
           <button
             onClick={() => setFocusNode(null)}
             className="px-4 py-2 rounded-full bg-elevated border border-gold/30 text-gold text-xs font-semibold tracking-wider uppercase hover:bg-gold/10 transition-colors flex items-center gap-2 shadow-lg"
@@ -348,7 +661,12 @@ export default function GraphView() {
         panOnScroll
         colorMode="dark"
       >
-        <Background variant={BackgroundVariant.Dots} color="rgba(212,165,116,0.15)" gap={20} size={1} />
+        <Background
+          variant={BackgroundVariant.Dots}
+          color="rgba(212,165,116,0.15)"
+          gap={20}
+          size={1}
+        />
         <Controls />
         <MiniMap
           nodeColor="#1a1a1a"
