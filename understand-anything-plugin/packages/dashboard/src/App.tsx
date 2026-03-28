@@ -337,7 +337,7 @@ function Dashboard({ accessToken }: { accessToken: string }) {
 
         {/* Code viewer overlay */}
         {codeViewerOpen && (
-          <div className="absolute bottom-0 left-0 right-0 h-[40vh] bg-surface border-t border-border-subtle animate-slide-up z-20">
+          <div className="absolute bottom-0 left-0 right-0 h-[25vh] bg-surface border-t border-border-subtle animate-slide-up z-20">
             <div className="h-full flex flex-col">
               <div className="flex items-center justify-end px-3 py-1 shrink-0">
                 <button
