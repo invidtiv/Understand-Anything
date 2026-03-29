@@ -280,46 +280,55 @@ function Dashboard({ accessToken }: { accessToken: string }) {
     <ThemeProvider metaTheme={metaTheme}>
     <div className="h-screen w-screen flex flex-col bg-root text-text-primary noise-overlay">
       {/* Header */}
-      <header className="flex items-center justify-between px-5 py-3 bg-surface border-b border-border-subtle shrink-0">
-        <div className="flex items-center gap-5">
+      <header className="flex items-center px-5 py-3 bg-surface border-b border-border-subtle shrink-0 gap-4">
+        {/* Left — fixed */}
+        <div className="flex items-center gap-5 shrink-0">
           <h1 className="font-serif text-lg text-text-primary tracking-wide">
             {graph?.project.name ?? "Understand Anything"}
           </h1>
           <div className="w-px h-5 bg-border-subtle" />
           <PersonaSelector />
         </div>
-        <div className="flex items-center gap-4">
-          <DiffToggle />
-          <div className="flex items-center gap-1">
-            {([
-              { key: "code", label: "Code", color: "var(--color-node-file)" },
-              { key: "config", label: "Config", color: "var(--color-node-config)" },
-              { key: "docs", label: "Docs", color: "var(--color-node-document)" },
-              { key: "infra", label: "Infra", color: "var(--color-node-service)" },
-              { key: "data", label: "Data", color: "var(--color-node-table)" },
-            ] as const).map((cat) => (
-              <button
-                key={cat.key}
-                onClick={() => toggleNodeTypeFilter(cat.key)}
-                className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded border transition-colors flex items-center gap-1.5 ${
-                  nodeTypeFilters[cat.key] !== false
-                    ? "border-border-medium bg-elevated text-text-secondary hover:text-text-primary"
-                    : "border-transparent bg-transparent text-text-muted/40 line-through hover:text-text-muted"
-                }`}
-                title={`${nodeTypeFilters[cat.key] !== false ? "Hide" : "Show"} ${cat.label} nodes`}
-              >
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{
-                    backgroundColor: cat.color,
-                    opacity: nodeTypeFilters[cat.key] !== false ? 1 : 0.3,
-                  }}
-                />
-                {cat.label}
-              </button>
-            ))}
+
+        {/* Middle — scrollable legends */}
+        <div className="flex-1 min-w-0 overflow-x-auto scrollbar-hide">
+          <div className="flex items-center gap-4 w-max">
+            <DiffToggle />
+            <div className="flex items-center gap-1">
+              {([
+                { key: "code", label: "Code", color: "var(--color-node-file)" },
+                { key: "config", label: "Config", color: "var(--color-node-config)" },
+                { key: "docs", label: "Docs", color: "var(--color-node-document)" },
+                { key: "infra", label: "Infra", color: "var(--color-node-service)" },
+                { key: "data", label: "Data", color: "var(--color-node-table)" },
+              ] as const).map((cat) => (
+                <button
+                  key={cat.key}
+                  onClick={() => toggleNodeTypeFilter(cat.key)}
+                  className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-1 rounded border transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+                    nodeTypeFilters[cat.key] !== false
+                      ? "border-border-medium bg-elevated text-text-secondary hover:text-text-primary"
+                      : "border-transparent bg-transparent text-text-muted/40 line-through hover:text-text-muted"
+                  }`}
+                  title={`${nodeTypeFilters[cat.key] !== false ? "Hide" : "Show"} ${cat.label} nodes`}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{
+                      backgroundColor: cat.color,
+                      opacity: nodeTypeFilters[cat.key] !== false ? 1 : 0.3,
+                    }}
+                  />
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+            <LayerLegend />
           </div>
-          <LayerLegend />
+        </div>
+
+        {/* Right — fixed actions */}
+        <div className="flex items-center gap-4 shrink-0">
           <FilterPanel />
           <ExportMenu />
           <button
