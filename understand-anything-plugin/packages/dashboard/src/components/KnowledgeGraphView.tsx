@@ -195,15 +195,36 @@ function KnowledgeGraphViewInner() {
       };
     });
 
+    const activeId = focusNodeId ?? selectedNodeId;
     const rfEdges: Edge[] = filteredGraph.edges.map((e) => {
-      const style = EDGE_STYLES[e.type] ?? EDGE_STYLES.related;
+      const baseStyle = EDGE_STYLES[e.type] ?? EDGE_STYLES.related;
+      const isConnected = activeId && (e.source === activeId || e.target === activeId);
+
+      // When a node is selected: highlight connected edges, dim the rest
+      let style: React.CSSProperties;
+      if (activeId) {
+        if (isConnected) {
+          style = {
+            ...baseStyle,
+            strokeWidth: Math.max(2, (baseStyle.strokeWidth as number ?? 1) * 1.5),
+            opacity: 1,
+          };
+        } else {
+          style = { ...baseStyle, opacity: 0.04 };
+        }
+      } else {
+        style = baseStyle;
+      }
+
       return {
         id: `ke-${e.source}-${e.target}-${e.type}`,
         source: e.source,
         target: e.target,
         style,
-        animated: e.type === "contradicts",
-        label: e.type !== "related" && e.type !== "categorized_under" ? e.type.replace(/_/g, " ") : undefined,
+        animated: e.type === "contradicts" && (!activeId || !!isConnected),
+        label: isConnected && e.type !== "related" && e.type !== "categorized_under"
+          ? e.type.replace(/_/g, " ")
+          : undefined,
         labelStyle: { fill: "var(--color-text-muted)", fontSize: 9, opacity: 0.7 },
         labelBgStyle: { fill: "var(--color-surface)", fillOpacity: 0.9 },
         labelBgPadding: [4, 2] as [number, number],
